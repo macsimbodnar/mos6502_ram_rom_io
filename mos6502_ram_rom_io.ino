@@ -1,14 +1,9 @@
-/**
- * PINS
- */
-
 #define LED                     LED_BUILTIN
 #define CLOCK_TICK_INPUT        18
 #define RW_PIN                  39
 
 #define ADDRESS_LEN             16
 #define DATA_LEN                8
-
 
 typedef enum {
     READ = LOW,
@@ -24,22 +19,24 @@ static const byte data_pins[DATA_LEN]       = {23, 25, 27, 29, 31, 33, 35, 37};
 /**
  *      0000 - 3000     RAM         (0100 - 01FF    STACK)
  *      6000 - 600F     I/O
- *      8000 - FFFF     ROM         (EFFC - EFFD    RESET VECTOR)
+ *      8000 - FFFF     ROM         (FFFC - FFFD    RESET VECTOR)
  */
 #define TOT_MEM             0xFFFF
-#define RAM_SIZE            0x0300
+#define RAM_SIZE            0x1000
 #define RAM_START_ADDRESS   0x0000
-#define ROM_SIZE            0x1000
-#define ROM_START_ADDRESS   (TOT_MEM - ROM_SIZE + 0x0001)
 
 static byte RAM[RAM_SIZE];
-static byte ROM[ROM_SIZE];
 // static byte IO[0x600F - 0x6000];
+
+// #define ROM_ENABLED          // Uncomment this if want to handle also the ROM
+#ifdef ROM_ENABLED
+#define ROM_SIZE            0x0800
+#define ROM_START_ADDRESS   (TOT_MEM - ROM_SIZE + 0x0001)
+static byte ROM[ROM_SIZE];
+#endif
 
 
 void setup() {
-    set_all_ram(0x00);
-    set_all_rom(0xEA);
 
     // MANUAL CLOCK LED
     digitalWrite(LED, HIGH);
@@ -68,22 +65,36 @@ void setup() {
 
     while (!Serial) ;     // wait for serial port to connect. Needed for native USB port only
 
-    // Setup the
+    // Init memory
+    set_all_ram(0x00);
+
+#ifdef ROM_ENABLED
+    set_all_rom(0xEA);
+
+    // Setup the reset vector to address 0xFF00 (will be the entry point to the program)
     ROM[rom_addr(0xFFFC)] = 0x00;
     ROM[rom_addr(0xFFFD)] = 0xFF;
 
-    byte prog[] = { 0xa9, 0x01, 0x8d, 0x00, 0x02, 0xa9, 0x05, 0x8d, 0x01, 0x02, 0xa9, 0x08, 0x8d, 0x02, 0x02 };
+    // Load a simple program into memory
+    // LDA #$01     ; Load 1 into register A
+    // STA $0200    ; Save the value of A into mem address 0x0200 (It is in RAM memory section)
+    // LDA #$05     ; Load 5 into register A
+    // STA $0201    ; Save the value of A into mem address 0x0201 (It is in RAM memory section)
+    // LDA #$08     ; Load 8 into register A
+    // STA $0202    ; Save the value of A into mem address 0x0202 (It is in RAM memory section)
     byte prog[] = { 0xA9, 0x01, 0x8D, 0x00, 0x02, 0xA9, 0x05, 0x8D, 0x01, 0x02, 0xA9, 0x08, 0x8D, 0x02, 0x02 };
-    // byte prog[] = {0x01, 0xa9, 0x00, 0x8d, 0xa9, 0x02, 0x8d, 0x05, 0x02, 0x01, 0x08, 0xa9, 0x02, 0x8d, 0x00, 0x02};
 
     for (int i = 0; i < sizeof(prog); i++) {
         ROM[rom_addr(0xFF00 + i)] = prog[i];
     }
+
+#endif
+
+
 }
 
 
 void loop() {
-
 }
 
 
@@ -101,12 +112,22 @@ void clock_tick_ISR() {
         // ROM
         mem = "ROM";
 
+#ifdef ROM_ENABLED
+
+        // The ROM is handled internally
         switch (rw) {
         case READ:
             data = ROM[rom_addr(address)];
             write_data(data);
             break;
         }
+
+#else
+        // The ROM is handled by external chip, the AT28C256
+        // Just display data on the data bus
+        data = read_data();
+#endif
+
     } else if (address < 0x3000) {
         // RAM
         mem = "RAM";
@@ -129,7 +150,7 @@ void clock_tick_ISR() {
 
 
     static char buff[20];
-    sprintf(buff, "%s   %04X   %c   %02X  |  %02X  %02X  %02X", mem, address, rw == READ ? 'R' : 'W', 
+    sprintf(buff, "%s   %04X   %c   %02X  |  %02X  %02X  %02X", mem, address, rw == READ ? 'R' : 'W',
             data, RAM[ram_addr(0x0200)], RAM[ram_addr(0x0201)], RAM[ram_addr(0x0202)]);
 
     Serial.println(buff);
@@ -186,16 +207,17 @@ inline static uint16_t ram_addr(uint16_t abs_adr) {
 }
 
 
-// Return the remapped ROM address
-inline static uint16_t rom_addr(uint16_t abs_adr) {
-    return abs_adr - ROM_START_ADDRESS;
-}
-
-
 inline static void set_all_ram(byte data) {
     for (int i = 0; i < (sizeof(RAM) / sizeof(RAM[0])); i++) {
         RAM[i] = data;
     }
+}
+
+
+#ifdef ROM_ENABLED
+// Return the remapped ROM address
+inline static uint16_t rom_addr(uint16_t abs_adr) {
+    return abs_adr - ROM_START_ADDRESS;
 }
 
 
@@ -204,3 +226,4 @@ inline static void set_all_rom(byte data) {
         ROM[i] = data;
     }
 }
+#endif
