@@ -1,13 +1,17 @@
 # RAM, ROM and IO for mos6502 with Arduino Mega
 
-### Compile the Assembly
+## Compile the Assembly
 
-I use [this Assembler](http://www.floodgap.com/retrotech/xa/).
+I use [this Assembler](http://sun.hasenbraten.de/vasm/). Compiled with
+
+```bash
+make CPU=6502 SYNTAX=oldstyle
+```
 
 After you compiled it just run:
 
 ```bash
-xa test.asm -o test.bin
+vasm6502_oldstyle -Fbin -dotdir test.asm
 ```
 
 ### Dump the binary
