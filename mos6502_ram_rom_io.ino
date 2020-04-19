@@ -1,3 +1,34 @@
+#define LCD_DISPLAY  // Comment this if want to disable the lcd support
+#ifdef LCD_DISPLAY
+
+/**
+ * LCD pins defines
+ */
+#define LCD_REG_SEL 3
+#define LCD_RW      4
+#define LCD_ENABLED 5
+#define LCD_DB0     6
+#define LCD_DB1     7
+#define LCD_DB2     8
+#define LCD_DB3     9
+#define LCD_DB4     10
+#define LCD_DB5     11
+#define LCD_DB6     12
+#define LCD_DB7     13
+#define LCD_MODE    19
+
+
+#include <LiquidCrystal.h>
+
+// Init the display
+static LiquidCrystal lcd(LCD_REG_SEL, LCD_ENABLED,
+                         LCD_DB0, LCD_DB1, LCD_DB2, LCD_DB3,
+                         LCD_DB4, LCD_DB5, LCD_DB6, LCD_DB7);
+
+volatile bool lcd_monitor_mode;
+#endif
+
+
 #define LED                     LED_BUILTIN
 #define CLOCK_TICK_INPUT        18
 #define RW_PIN                  39
@@ -38,11 +69,28 @@ static byte ROM[ROM_SIZE];
 
 void setup() {
 
-    // MANUAL CLOCK LED
-    digitalWrite(LED, HIGH);
+    // Setup LCD
+    digitalWrite(LCD_RW, LOW);
+    pinMode(LCD_RW, OUTPUT);
+
+#ifdef LCD_ENABLED
+    // set up the LCD's number of columns and rows:
+    lcd.begin(16, 2);
+
+    // TOGGLE LCD MODE INTERRUPT
+    // pinMode(LCD_MODE, INPUT);
+    digitalWrite(LCD_MODE, HIGH);
+    pinMode(LCD_MODE, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(LCD_MODE), lcd_mode_button_ISR, RISING);
+#endif
+
+    lcd_monitor_mode = false;
+
+    // MANUAL CLOCK LED         Is on when the clock interrupt is executed
+    digitalWrite(LED, LOW);
     pinMode(LED, OUTPUT);
 
-    // TOGGLE CLOCK MODE BUTTON INTERRUPT
+    // MOS6502 CLOCK INTERRUPT
     pinMode(CLOCK_TICK_INPUT, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(CLOCK_TICK_INPUT), clock_tick_ISR, RISING);
 
@@ -56,7 +104,6 @@ void setup() {
 
     // INIT DATA PINS
     for (int i = 0; i < DATA_LEN; i++) {
-        digitalWrite(LED, HIGH);
         pinMode(data_pins[i], OUTPUT);
     }
 
@@ -102,6 +149,9 @@ void loop() {
    INTERRUPT HANDLERS
 */
 void clock_tick_ISR() {
+    noInterrupts();
+    digitalWrite(LED, HIGH);
+
     uint16_t address = read_address();
     mem_access_t rw = read_rw();
     byte data;
@@ -148,13 +198,42 @@ void clock_tick_ISR() {
         mem = "I/O";
     }
 
-
+    // Print the status on serial
     static char buff[20];
     sprintf(buff, "%s   %04X   %c   %02X  |  %02X  %02X  %02X", mem, address, rw == READ ? 'R' : 'W',
             data, RAM[ram_addr(0x0200)], RAM[ram_addr(0x0201)], RAM[ram_addr(0x0202)]);
 
     Serial.println(buff);
+
+
+#ifdef LCD_ENABLED
+
+    // Print the status on LCD if enabled
+    if (lcd_monitor_mode) {
+        lcd.setCursor(0, 0);
+        sprintf(buff, "%s %04X %c %02X", mem, address, rw == READ ? 'R' : 'W', data);
+        lcd.print(buff);
+
+        lcd.setCursor(0, 1);
+        sprintf(buff, "%02X  %02X  %02X",
+                RAM[ram_addr(0x0200)], RAM[ram_addr(0x0201)], RAM[ram_addr(0x0202)]);
+        lcd.print(buff);
+    }
+
+#endif
+
+    digitalWrite(LED, LOW);
+    interrupts();
 }
+
+
+#ifdef LCD_ENABLED
+void lcd_mode_button_ISR() {
+    noInterrupts();
+    lcd_monitor_mode = !lcd_monitor_mode;
+    interrupts();
+}
+#endif
 
 
 /**
