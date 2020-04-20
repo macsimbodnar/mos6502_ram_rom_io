@@ -1,37 +1,6 @@
-#define LCD_DISPLAY  // Comment this if want to disable the lcd support
-#ifdef LCD_DISPLAY
-
-/**
- * LCD pins defines
- */
-#define LCD_REG_SEL 3
-#define LCD_RW      4
-#define LCD_ENABLED 5
-#define LCD_DB0     6
-#define LCD_DB1     7
-#define LCD_DB2     8
-#define LCD_DB3     9
-#define LCD_DB4     10
-#define LCD_DB5     11
-#define LCD_DB6     12
-#define LCD_DB7     13
-#define LCD_MODE    19
-
-
-#include <LiquidCrystal.h>
-
-// Init the display
-static LiquidCrystal lcd(LCD_REG_SEL, LCD_ENABLED,
-                         LCD_DB0, LCD_DB1, LCD_DB2, LCD_DB3,
-                         LCD_DB4, LCD_DB5, LCD_DB6, LCD_DB7);
-
-volatile bool lcd_monitor_mode;
-#endif
-
-
-#define LED                     LED_BUILTIN
+// #define LED                     LED_BUILTIN  // PIN 13
 #define CLOCK_TICK_INPUT        18
-#define RW_PIN                  39
+#define RW_PIN                  13
 
 #define ADDRESS_LEN             16
 #define DATA_LEN                8
@@ -67,28 +36,27 @@ static byte ROM[ROM_SIZE];
 #endif
 
 
+typedef struct {
+    const byte pins[DATA_LEN];
+    byte data_direction[DATA_LEN];
+} io_port_t;
+
+
+static io_port_t io_port_A = {
+//   LSB                  MSB
+    {4, 5, 6, 7, 8, 9, 10, 11},
+    {INPUT, INPUT, INPUT, INPUT, INPUT, INPUT, INPUT, INPUT}
+};
+
+
+static io_port_t io_port_B = {
+//   LSB                        MSB
+    {39, 41, 43, 45, 47, 49, 51, 53},
+    {INPUT, INPUT, INPUT, INPUT, INPUT, INPUT, INPUT, INPUT}
+};
+
+
 void setup() {
-
-    // Setup LCD
-    digitalWrite(LCD_RW, LOW);
-    pinMode(LCD_RW, OUTPUT);
-
-#ifdef LCD_ENABLED
-    // set up the LCD's number of columns and rows:
-    lcd.begin(16, 2);
-
-    // TOGGLE LCD MODE INTERRUPT
-    // pinMode(LCD_MODE, INPUT);
-    digitalWrite(LCD_MODE, HIGH);
-    pinMode(LCD_MODE, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(LCD_MODE), lcd_mode_button_ISR, RISING);
-#endif
-
-    lcd_monitor_mode = false;
-
-    // MANUAL CLOCK LED         Is on when the clock interrupt is executed
-    digitalWrite(LED, LOW);
-    pinMode(LED, OUTPUT);
 
     // MOS6502 CLOCK INTERRUPT
     pinMode(CLOCK_TICK_INPUT, INPUT_PULLUP);
@@ -136,8 +104,6 @@ void setup() {
     }
 
 #endif
-
-
 }
 
 
@@ -150,7 +116,6 @@ void loop() {
 */
 void clock_tick_ISR() {
     noInterrupts();
-    digitalWrite(LED, HIGH);
 
     uint16_t address = read_address();
     mem_access_t rw = read_rw();
@@ -178,7 +143,7 @@ void clock_tick_ISR() {
         data = read_data();
 #endif
 
-    } else if (address < 0x3000) {
+    } else if (address < 0x3000) {      // The ram is from address 0x0000 to the 0x3000
         // RAM
         mem = "RAM";
 
@@ -193,9 +158,42 @@ void clock_tick_ISR() {
             RAM[ram_addr(address)] = data;
             break;
         }
-    } else {
+    } else if (address > 0x5FFF) {      // The I/O is from address 0x6000 to the address 0x7FFF
+
         // I/O and Other
         mem = "I/O";
+
+        switch (rw) {
+        case READ:
+            // data = latch_and_write_data();
+            break;
+
+        case WRITE:
+            switch (address) {
+            case 0x6000:        // PORT B
+                data = read_and_latch_io(&io_port_B);
+                break;
+
+            case 0x6001:        // PORT A
+                data = read_and_latch_io(&io_port_A);
+
+                break;
+
+            case 0x6002:        // Data direction Port B
+                data = set_data_direction(&io_port_B);
+                break;
+
+            case 0x6003:        // Data direction Port A
+                data = set_data_direction(&io_port_A);
+                break;
+            }
+
+            break;
+        }
+
+
+    } else {                            // Addresses from 0x3000 to the 0x5FFF are unused
+        mem = "UDF";
     }
 
     // Print the status on serial
@@ -205,35 +203,8 @@ void clock_tick_ISR() {
 
     Serial.println(buff);
 
-
-#ifdef LCD_ENABLED
-
-    // Print the status on LCD if enabled
-    if (lcd_monitor_mode) {
-        lcd.setCursor(0, 0);
-        sprintf(buff, "%s %04X %c %02X", mem, address, rw == READ ? 'R' : 'W', data);
-        lcd.print(buff);
-
-        lcd.setCursor(0, 1);
-        sprintf(buff, "%02X  %02X  %02X",
-                RAM[ram_addr(0x0200)], RAM[ram_addr(0x0201)], RAM[ram_addr(0x0202)]);
-        lcd.print(buff);
-    }
-
-#endif
-
-    digitalWrite(LED, LOW);
     interrupts();
 }
-
-
-#ifdef LCD_ENABLED
-void lcd_mode_button_ISR() {
-    noInterrupts();
-    lcd_monitor_mode = !lcd_monitor_mode;
-    interrupts();
-}
-#endif
 
 
 /**
@@ -262,6 +233,91 @@ static byte read_data() {
 
     return res;
 }
+
+
+static byte read_and_latch_io(io_port_t *port) {
+    byte pin;
+    byte io_pin;
+    byte res = 0x00;
+
+    for (int i = 0; i < DATA_LEN; i++) {
+        pin = data_pins[i];
+        io_pin = port->pins[i];
+        pinMode(pin, INPUT);
+        byte val = digitalRead(pin);
+
+        // Write on pin only if the mode is write to avoid weird behavior
+        if (port->data_direction[i] == OUTPUT) {
+            digitalWrite(io_pin, val);
+            pinMode(io_pin, OUTPUT);
+        }
+
+        res |= val << i;
+    }
+
+    return res;
+}
+
+
+static byte set_data_direction(io_port_t *port) {
+    byte pin;
+    byte res = 0x00;
+
+    for (int i = 0; i < DATA_LEN; i++) {
+        pin = data_pins[i];
+        pinMode(pin, INPUT);
+        byte val = digitalRead(pin);
+
+        port->data_direction[i] = val ? OUTPUT : INPUT;
+
+        res |= val << i;
+    }
+
+    return res;
+}
+
+
+#ifdef false
+static byte read_and_latch_data() {
+    byte data_pin;
+    byte latch_pin;
+    byte res = 0x00;
+
+    for (int i = 0; i < DATA_LEN; i++) {
+        data_pin = data_pins[i];
+        latch_pin = io_port_B_pins[i];
+
+        pinMode(data_pin, INPUT);
+        byte status = digitalRead(data_pin);
+        digitalWrite(latch_pin, status);
+        pinMode(latch_pin, OUTPUT);
+
+        res |= status << i;
+    }
+
+    return res;
+}
+
+static byte latch_and_write_data() {
+    byte data_pin;
+    byte latch_pin;
+    byte res = 0x00;
+
+    for (int i = 0; i < DATA_LEN; i++) {
+        data_pin = data_pins[i];
+        latch_pin = io_port_B_pins[i];
+
+        pinMode(latch_pin, INPUT);
+        byte status = digitalRead(latch_pin);
+        digitalWrite(data_pin, status);
+        pinMode(data_pin, OUTPUT);
+
+        res |= status << i;
+    }
+
+    return res;
+}
+#endif
 
 
 static void write_data(byte data) {
